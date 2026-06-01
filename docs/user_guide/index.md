@@ -40,7 +40,8 @@ pip install "ray-ascend[yr]"
 
 - [Installation](installation.md): Detailed installation and setup instructions
 - [HCCL Collective Communication](hccl_collective.md): Collective operations guide
-- [YR Direct Transport](yr_transport.md): Tensor transport guide
+- [HCCL Tensor Transport](hccl_transport.md): NPU tensor transport via HCCS
+- [YR Direct Transport](yr_transport.md): CPU/NPU tensor transport via RDMA/HCCS
 - [API Reference](api_reference.md): Complete API documentation
 - [Best Practices](best_practices.md): Best practices, troubleshooting, and FAQ
 

@@ -9,7 +9,7 @@
 1. **Device Consistency**: Ensure all tensors used in collective operations reside on
    the same NPU device that was used during communicator initialization.
 
-1. **Group Cleanup**: Always call `destroy_group()` when done to free communicator
+1. **Group Cleanup**: Clean up collective group resources when done to free communicator
    resources.
 
 1. **Rank Coordination**: All ranks must participate in collective operations in the
@@ -47,7 +47,7 @@
 **Problem**: "Collective ops must use the same device as communicator initialization"
 
 **Solution**: Ensure the tensor you're passing is on the same NPU device that was
-current when the `HCCLGroup` was created.
+current when the collective group was created.
 
 ### YR Transport Issues
 

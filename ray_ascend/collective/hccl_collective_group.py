@@ -2,7 +2,7 @@ import ctypes
 import datetime
 import logging
 import time
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import ray
 import torch
@@ -22,6 +22,18 @@ from ray.util.collective.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    import importlib.util
+
+    if importlib.util.find_spec("torch_npu") is None:
+        raise ImportError("torch_npu not found")
+    ctypes.CDLL("libhccl.so")
+    _HCCL_AVAILABLE = True
+    _LOG_HCCL_WARNING = False
+except (ImportError, OSError):
+    _HCCL_AVAILABLE = False
+    _LOG_HCCL_WARNING = True
 
 
 class HcclRootInfo(ctypes.Structure):
@@ -154,6 +166,20 @@ class HCCLGroup(BaseGroup):
         """Return the backend type for this group."""
         return Backend.HCCL
 
+    @classmethod
+    def check_backend_availability(cls) -> bool:
+        """Check if the backend is available."""
+        global _HCCL_AVAILABLE, _LOG_HCCL_WARNING
+        if not _HCCL_AVAILABLE and _LOG_HCCL_WARNING:
+            logger.warning(
+                "HCCL seems unavailable. Please install torch_npu "
+                "following the guide at: "
+                "https://gitcode.com/Ascend/pytorch and "
+                "ensure libhccl.so is available."
+            )
+            _LOG_HCCL_WARNING = False
+        return _HCCL_AVAILABLE
+
     def broadcast(
         self,
         tensor: torch.Tensor,
@@ -231,6 +257,10 @@ class HCCLGroup(BaseGroup):
                 event.record(stream)
                 current_stream.wait_event(event)
             logger.debug(f"HcclAllGather execute result : {exec_result}")
+
+        # Handle case where tensor_list is wrapped in another list by Ray's collective.py
+        if tensor_list and isinstance(tensor_list[0], list):
+            tensor_list = tensor_list[0]
 
         output_flattened = [_flatten_for_scatter_gather(tensor_list, copy=False)]
 
@@ -592,12 +622,18 @@ class HCCLGroup(BaseGroup):
         self._stream = stream
         self._device = device
 
-    def _validate_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Validate a single tensor and return it.
+    def _validate_tensor(
+        self, tensor: Union[torch.Tensor, List[torch.Tensor]]
+    ) -> torch.Tensor:
+        """Validate a tensor and return it.
 
-        Enforces the single-device constraint and checks that the tensor device
-        matches the communicator's initialization device.
+        Accepts a Tensor or a single-element list (unwrapped automatically).
+        Enforces single-device constraint against the communicator's device.
         """
+        # If the input is a list of tensors, we only support single tensor list for now.
+        # We will extract the single tensor out for validation.
+        if isinstance(tensor, list) and len(tensor) == 1:
+            tensor = tensor[0]
         if not isinstance(tensor, torch.Tensor):
             raise RuntimeError("Collective ops require torch.Tensor inputs.")
         device = get_tensor_device(tensor)

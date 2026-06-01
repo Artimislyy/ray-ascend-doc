@@ -1,9 +1,11 @@
 # HCCL Collective Communication
 
-> _Last updated: 03/24/2026_
+> _Last updated: 05/30/2026_
 
 ray-ascend provides HCCL (Huawei Collective Communication Library) support for
 distributed collective operations across Ray actors.
+
+> **Note**: HCCL collective backend requires Ray >= 2.56.
 
 ## Available Collective Operations
 
@@ -15,44 +17,30 @@ distributed collective operations across Ray actors.
 - **send/recv**: Point-to-point communication
 - **barrier**: Synchronize all ranks
 
-## Quick Example: HCCL Collective Group
+## Quick Example
 
 ```python
 import ray
+import torch
 from ray.util import collective
-from ray_ascend.collective import HCCLGroup
+from ray_ascend import register_hccl_collective_backend
 
-# Initialize Ray
 ray.init()
+register_hccl_collective_backend()
 
-# Register the HCCL backend
-ray.register_collective_backend("HCCL", HCCLGroup)
-
-# Create actors with NPU resources
 @ray.remote(resources={"NPU": 1})
 class Worker:
     def __init__(self):
-        import torch
-        import torch_npu
-        self.device = torch.npu.current_device()
-
-    def setup_group(self, world_size, rank, group_name):
-        self.group = HCCLGroup(world_size, rank, group_name)
+        register_hccl_collective_backend()
 
     def do_allreduce(self, data):
-        import torch
         tensor = torch.tensor(data, dtype=torch.float32).npu()
-        self.group.allreduce(tensor)
+        collective.allreduce(tensor, group_name="my_hccl_group")
         return tensor.cpu().tolist()
 
-    def destroy(self):
-        self.group.destroy_group()
-
-# Create workers
 world_size = 2
 actors = [Worker.remote() for _ in range(world_size)]
 
-# Create collective group
 collective.create_collective_group(
     actors,
     world_size,
@@ -61,42 +49,59 @@ collective.create_collective_group(
     group_name="my_hccl_group",
 )
 
-# Perform allreduce
 results = ray.get([
     actors[i].do_allreduce.remote([1.0 * (i + 1), 2.0 * (i + 1)])
     for i in range(world_size)
 ])
-print("Allreduce results:", results)  # Both should show [3.0, 6.0]
+print("Allreduce results:", results)
 
-# Cleanup
-ray.get([actor.destroy.remote() for actor in actors])
 ray.shutdown()
 ```
 
-## Using Ray's Collective API
+## Point-to-Point Communication
 
-You can also use Ray's high-level collective API:
+HCCL supports send/recv operations between specific ranks in a collective group:
 
 ```python
 import ray
+import torch
 from ray.util import collective
-from ray_ascend.collective import HCCLGroup
+from ray_ascend import register_hccl_collective_backend
 
 ray.init()
-ray.register_collective_backend("HCCL", HCCLGroup)
+register_hccl_collective_backend()
 
 @ray.remote(resources={"NPU": 1})
 class Worker:
-    def broadcast_tensor(self, src_rank=0):
-        import torch
-        tensor = torch.ones(10).npu() if self.rank == src_rank else torch.zeros(10).npu()
-        collective.broadcast(tensor, src_rank=src_rank, group_name="my_hccl_group")
+    def __init__(self):
+        register_hccl_collective_backend()
+
+    def send_tensor(self, data, dst_rank):
+        tensor = torch.tensor(data, dtype=torch.float32).npu()
+        collective.send(tensor, dst_rank=dst_rank, group_name="p2p_group")
+
+    def recv_tensor(self, shape, src_rank):
+        tensor = torch.zeros(shape, dtype=torch.float32).npu()
+        collective.recv(tensor, src_rank=src_rank, group_name="p2p_group")
         return tensor.cpu().tolist()
 
-# Create and setup group...
+world_size = 2
+actors = [Worker.remote() for _ in range(world_size)]
 
-# Each actor broadcasts in SPMD manner
-results = ray.get([actor.broadcast_tensor.remote() for actor in actors])
+collective.create_collective_group(
+    actors,
+    world_size,
+    list(range(world_size)),
+    backend="HCCL",
+    group_name="p2p_group",
+)
+
+# Rank 0 sends to rank 1
+ray.get(actors[0].send_tensor.remote([7.0, 8.0, 9.0], dst_rank=1))
+result = ray.get(actors[1].recv_tensor.remote((3,), src_rank=0))
+print("Received:", result)  # [7.0, 8.0, 9.0]
+
+ray.shutdown()
 ```
 
 ## Supported Tensor Types

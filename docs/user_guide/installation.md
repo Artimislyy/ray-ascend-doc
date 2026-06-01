@@ -6,6 +6,8 @@
 
 ### Basic Installation (HCCL Only)
 
+> **Note**: HCCL collective and tensor transport features require Ray >= 2.56.
+
 Install the base package with HCCL collective communication support:
 
 ```bash

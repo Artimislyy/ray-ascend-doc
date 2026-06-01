@@ -206,52 +206,6 @@ print("CPU tensor shape:", cpu_tensor.shape)
 ray.shutdown()
 ```
 
-## Combined HCCL + YR Transport
-
-For advanced use cases combining HCCL collective communication with YR direct transport:
-
-```python
-import os
-import ray
-from ray.util.collective import create_collective_group
-from ray_ascend import register_yr_tensor_transport
-from ray_ascend.collective import HCCLGroup
-
-ray.init(address="auto")
-
-# Register both backends
-ray.register_collective_backend("HCCL", HCCLGroup)
-register_yr_tensor_transport(["npu", "cpu"])
-
-@ray.remote(resources={"NPU": 1})
-class RayActor:
-    def __init__(self):
-        import torch
-        import torch_npu
-        register_yr_tensor_transport(["npu", "cpu"])
-
-    @ray.method(tensor_transport="YR")
-    def random_tensor(self):
-        """Return an NPU tensor via YR transport."""
-        import torch
-        return torch.zeros(1024, device="npu")
-
-    def sum(self, tensor):
-        """Process a received tensor."""
-        return tensor.sum()
-
-# Create actors
-sender, receiver = RayActor.remote(), RayActor.remote()
-
-# Create HCCL collective group
-group = create_collective_group([sender, receiver], backend="HCCL")
-
-# Use YR transport for tensor transfer
-tensor = sender.random_tensor.remote()
-result = receiver.sum.remote(tensor)
-print(ray.get(result))
-```
-
 ## Decorator Usage
 
 Use `@ray.method(tensor_transport="YR")` on actor methods that return or receive tensors
