@@ -17,7 +17,7 @@ __commit__ = _version.commit
 __version__ = _version.version
 
 
-def register_yr_tensor_transport(devices=None) -> None:
+def register_yr_tensor_transport(devices=["npu", "cpu"]) -> None:
     """
     Register YR tensor transport for Ray and initialize YR backend.
 
