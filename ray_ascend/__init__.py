@@ -17,7 +17,7 @@ __commit__ = _version.commit
 __version__ = _version.version
 
 
-def register_yr_tensor_transport(devices=["npu", "cpu"]) -> None:
+def register_yr_tensor_transport(devices=None) -> None:
     """
     Register YR tensor transport for Ray and initialize YR backend.
 
@@ -37,7 +37,6 @@ def register_yr_tensor_transport(devices=["npu", "cpu"]) -> None:
             - ["npu"] for NPU tensors only
             - ["npu", "cpu"] for NPU and CPU tensors
             - ["cpu"] for CPU tensors only
-            - None (default) for both ["npu", "cpu"]
 
     Example:
         import os
@@ -61,13 +60,18 @@ def register_yr_tensor_transport(devices=["npu", "cpu"]) -> None:
                 register_yr_tensor_transport(["npu", "cpu"])
 
             @ray.method(tensor_transport="YR")
-            def transfer_npu_tensor_via_hccs():
+            def transfer_npu_tensor_via_hccs(self):
                 return torch.zeros(1024, device="npu")
 
             @ray.method(tensor_transport="YR")
-            def transfer_cpu_tensor_via_rdma():
+            def transfer_cpu_tensor_via_rdma(self):
                 return torch.zeros(1024)
     """
+    if devices is None:
+        raise ValueError(
+            "devices cannot be None. Specify a list of device types, e.g., ['npu', 'cpu']"
+        )
+
     import torch
 
     try:
