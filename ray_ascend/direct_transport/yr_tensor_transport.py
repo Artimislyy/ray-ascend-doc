@@ -2,7 +2,7 @@ import logging
 import pickle
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import ray
 import torch
@@ -57,7 +57,7 @@ class YRTensorTransport(TensorTransportManager):
     def can_abort_transport() -> bool:
         return False
 
-    def _get_worker_address(self) -> tuple[str, int]:
+    def _get_worker_address(self) -> Tuple[str, int]:
         """Get worker address from coordinator.
 
         Returns:
@@ -80,7 +80,7 @@ class YRTensorTransport(TensorTransportManager):
         host, port_str = worker_addr.split(":")
         return host, int(port_str)
 
-    def get_ds_client(self, device_type: str) -> Any:
+    def get_ds_client(self, device_type: str):
         """Creates a YR DS client if it does not already exist."""
         if self._ds_client.get(device_type) is not None:
             return self._ds_client[device_type]
@@ -221,7 +221,7 @@ class YRTensorTransport(TensorTransportManager):
         tensors: List["torch.Tensor"],
         tensor_transport_metadata: TensorTransportMetadata,
         communicator_metadata: CommunicatorMetadata,
-    ):
+    ) -> None:
         raise NotImplementedError(
             "YR DS transport does not support send_multiple_tensors,"
             "since it is a one-sided transport."
@@ -232,7 +232,7 @@ class YRTensorTransport(TensorTransportManager):
         obj_id: str,
         tensor_transport_meta: TensorTransportMetadata,
         tensors: Optional[List[Any]] = None,
-    ):
+    ) -> None:
         assert isinstance(tensor_transport_meta, YRTransportMetadata)
         serialized_keys = tensor_transport_meta.ds_serialized_keys
         device_type = tensor_transport_meta.tensor_device
@@ -252,5 +252,5 @@ class YRTensorTransport(TensorTransportManager):
         self,
         obj_id: str,
         communicator_metadata: CommunicatorMetadata,
-    ):
+    ) -> None:
         raise NotImplementedError("YR transport does not support aborting.")

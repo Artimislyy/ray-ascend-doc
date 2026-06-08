@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import ray
 import requests
@@ -46,8 +46,12 @@ def get_free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def check_etcd_installed():
-    """Raise RuntimeError if 'etcd' is not found in PATH."""
+def check_etcd_installed() -> None:
+    """Raise RuntimeError if 'etcd' is not found in PATH.
+
+    Raises:
+        RuntimeError: If etcd is not installed or not found in PATH.
+    """
     if shutil.which("etcd") is None:
         raise RuntimeError(
             "'etcd' is not installed or not found in PATH. Please install etcd and ensure it's accessible from the command line."
@@ -59,8 +63,21 @@ def start_etcd(
     client_port: Optional[int] = None,
     peer_port: Optional[int] = None,
     max_retries: int = 3,
-) -> tuple[str, subprocess.Popen, str]:
-    """Start etcd in a subprocess and wait until it's healthy."""
+) -> Tuple[str, subprocess.Popen, str]:
+    """Start etcd in a subprocess and wait until it's healthy.
+
+    Args:
+        host: The host address for etcd to bind to.
+        client_port: The client port. If None, a free port is auto-selected.
+        peer_port: The peer port. If None, a free port is auto-selected.
+        max_retries: Maximum number of retries for starting etcd.
+
+    Returns:
+        Tuple of (etcd_addr, etcd_proc, etcd_data_dir).
+
+    Raises:
+        RuntimeError: If etcd fails to start after max_retries.
+    """
     check_etcd_installed()
 
     for attempt in range(max_retries):
@@ -101,7 +118,7 @@ def start_etcd(
         for _ in range(10):
             try:
                 resp = requests.get(f"{client_addr}/health", timeout=1)
-                is_etcd_healthy: bool = (
+                is_etcd_healthy = (
                     resp.status_code == requests.codes.ok
                     and resp.json().get("health") == "true"
                 )
@@ -326,7 +343,7 @@ class DataSystemActor:
         worker_args: Optional[str] = None,
         worker_port: Optional[int] = None,
     ):
-        self.init_mode = init_mode
+        self.init_mode: str = init_mode
         self._worker_host: Optional[str] = None
         self._worker_port: Optional[int] = None
         self._worker_address: Optional[str] = None
@@ -334,7 +351,7 @@ class DataSystemActor:
         self.etcd_address: Optional[str] = None
         self.metastore_address: Optional[str] = None
         self.is_head: bool = False
-        self.worker_args = worker_args or ""
+        self.worker_args: str = worker_args or ""
 
         # Get node IP via Ray API
         self._worker_host = ray.util.get_node_ip_address()
@@ -394,7 +411,11 @@ class DataSystemActor:
         return worker_address
 
     def _start_reaper(self, worker_address: str) -> None:
-        """Start reaper subprocess for Parent Process Death Detection cleanup."""
+        """Start reaper subprocess for Parent Process Death Detection cleanup.
+
+        Args:
+            worker_address: The worker address to monitor.
+        """
         self._reaper_process = subprocess.Popen(
             [sys.executable, "-c", _REAPER_SCRIPT, worker_address],
             stdin=subprocess.PIPE,
@@ -470,20 +491,24 @@ class YRBackendCoordinator:
     The coordinator:
     - Creates Placement Group for worker actors
     - Creates DataSystemActor on each node
-    - Manages node_worker_addresses mapping
+    - Manages node_worker_addresses mapping.
     """
 
     def __init__(self):
-        self._initialized = False
+        self._initialized: bool = False
         self._init_mode: Optional[str] = None  # "etcd" or "metastore"
         self._worker_args: str = ""
-        self._placement_group = None
+        self._placement_group: Optional["ray.util.placement_group.PlacementGroup"] = (
+            None
+        )
         self._etcd_address: Optional[str] = None  # for etcd mode
         self._metastore_address: Optional[str] = None  # for metastore mode
-        self._node_worker_addresses = {}  # {node_ip: worker_address}
-        self._worker_actors: list = []  # Store actor handles for cleanup
+        self._node_worker_addresses: Dict[str, str] = {}  # {node_ip: worker_address}
+        self._worker_actors: List["ray.actor.ActorHandle"] = []
 
-    def _create_placement_group(self, nodes: list):
+    def _create_placement_group(
+        self, nodes: List[dict]
+    ) -> "ray.util.placement_group.PlacementGroup":
         """Create placement group with STRICT_SPREAD strategy.
 
         Args:
@@ -529,7 +554,7 @@ class YRBackendCoordinator:
         )
         return pg
 
-    def _collect_worker_addresses(self, actors: list) -> None:
+    def _collect_worker_addresses(self, actors: List["ray.actor.ActorHandle"]) -> None:
         """Collect worker addresses from actors.
 
         Args:
@@ -540,7 +565,7 @@ class YRBackendCoordinator:
             worker_addr = ray.get(actor.get_worker_address.remote())
             self._node_worker_addresses[node_ip] = worker_addr
 
-    def _get_backend_info_dict(self) -> dict:
+    def _get_backend_info_dict(self) -> Dict[str, Any]:
         """Return backend info dict."""
         return {
             "init_mode": self._init_mode,
@@ -580,7 +605,9 @@ class YRBackendCoordinator:
             except Exception as e:
                 logger.warning(f"Failed to remove placement group: {e}")
 
-    def _get_bundle_node_ip(self, pg, bundle_index: int) -> str:
+    def _get_bundle_node_ip(
+        self, pg: "ray.util.placement_group.PlacementGroup", bundle_index: int
+    ) -> str:
         """Get node IP for a specific bundle in placement group.
 
         Args:
@@ -607,7 +634,7 @@ class YRBackendCoordinator:
 
         raise RuntimeError(f"Node {node_id} not found in cluster")
 
-    def _get_alive_nodes(self) -> list:
+    def _get_alive_nodes(self) -> List[dict]:
         """Get list of alive Ray nodes.
 
         Returns:
@@ -629,7 +656,7 @@ class YRBackendCoordinator:
         worker_args: str,
         etcd_address: Optional[str] = None,
         metastore_port: Optional[int] = None,
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """Initialize YR backend.
 
         All parameters are provided by ensure_yr_backend_initialized.
@@ -681,7 +708,9 @@ class YRBackendCoordinator:
         else:
             raise RuntimeError(f"Unknown init_mode: {init_mode}")
 
-    def _initialize_etcd_mode(self, worker_port: int, worker_args: str) -> dict:
+    def _initialize_etcd_mode(
+        self, worker_port: int, worker_args: str
+    ) -> Dict[str, Any]:
         """Initialize YR backend using user-provided etcd.
 
         In etcd mode, all nodes start DS workers that connect to the same etcd.
@@ -745,7 +774,7 @@ class YRBackendCoordinator:
 
     def _initialize_metastore_mode(
         self, worker_port: int, metastore_port: int, worker_args: str
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """Initialize YR backend using metastore mode.
 
         In metastore mode, the head node starts a metastore service,
@@ -851,7 +880,7 @@ class YRBackendCoordinator:
         worker_args: Optional[str] = None,
         etcd_address: Optional[str] = None,
         metastore_port: Optional[int] = None,
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """Get backend info.
 
         Behavior depends on initialization state and parameters:
@@ -893,8 +922,15 @@ def ensure_yr_backend_initialized(
     worker_args: Optional[str] = None,
     etcd_address: Optional[str] = None,
     metastore_port: Optional[int] = None,
-) -> dict:
+) -> Dict[str, Any]:
     """Ensure YR backend is initialized.
+
+    Args:
+        init_mode: Initialization mode, "etcd" or "metastore" (defaults to env var or "metastore").
+        worker_port: DS worker port (defaults to env var or 31501).
+        worker_args: Additional worker arguments (defaults to env var or "").
+        etcd_address: Etcd address (required for etcd mode, defaults to env var).
+        metastore_port: Metastore port (defaults to env var or 2379).
 
     Returns:
         backend_info dict containing init_mode, worker_args, etcd/metastore_address,
@@ -922,7 +958,7 @@ def ensure_yr_backend_initialized(
         namespace="yr_backend", get_if_exists=True
     ).remote()
 
-    backend_info: dict = ray.get(
+    backend_info: Dict[str, Any] = ray.get(
         coordinator.get_backend_info.remote(
             init_mode_val,
             worker_port_val,
@@ -934,7 +970,7 @@ def ensure_yr_backend_initialized(
     return backend_info
 
 
-def get_yr_backend_info() -> dict:
+def get_yr_backend_info() -> Dict[str, Any]:
     """Get YR backend info if already initialized.
 
     This function is used internally by YRTensorTransport to get worker addresses.
@@ -951,5 +987,5 @@ def get_yr_backend_info() -> dict:
         namespace="yr_backend", get_if_exists=True
     ).remote()
 
-    backend_info: dict = ray.get(coordinator.get_backend_info.remote())
+    backend_info: Dict[str, Any] = ray.get(coordinator.get_backend_info.remote())
     return backend_info

@@ -1,6 +1,7 @@
 import struct
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from typing import List
 
 import torch
 
@@ -38,78 +39,126 @@ from abc import ABC, abstractmethod
 from ray_ascend.utils.serial_utils import _decoder, _encoder
 
 
-def raise_if_failed(failed_keys, action):
+def raise_if_failed(failed_keys: List[str], action: str) -> None:
+    """Raise RuntimeError if any keys failed.
+
+    Args:
+        failed_keys: List of keys that failed the operation.
+        action: Description of the action (e.g., "put", "get", "delete").
+    """
     if failed_keys:
         raise RuntimeError(f"Failed to {action} keys: {failed_keys}")
 
 
 class BaseDSAdapter(ABC):
-    MAX_KEYS_PER_BATCH = 10000
+    """Base class for YR DS client adapters with batch processing support."""
+
+    MAX_KEYS_PER_BATCH: int = 10000
 
     @abstractmethod
-    def init(self):
+    def init(self) -> None:
+        """Initialize the DS client connection."""
         pass
 
-    def put(self, keys, tensors):
-        """Store multiple objects with batch processing."""
+    def put(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Store multiple objects with batch processing.
+
+        Args:
+            keys: List of keys to store.
+            tensors: List of tensors to store.
+        """
         batch_size = self.MAX_KEYS_PER_BATCH
         for i in range(0, len(keys), batch_size):
             self._put_batch(keys[i : i + batch_size], tensors[i : i + batch_size])
 
     @abstractmethod
-    def _put_batch(self, keys, tensors):
-        """Process a single batch of put operations."""
+    def _put_batch(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Process a single batch of put operations.
+
+        Args:
+            keys: List of keys for this batch.
+            tensors: List of tensors for this batch.
+        """
         pass
 
-    def get(self, keys, tensors):
-        """Retrieve multiple objects with batch processing."""
+    def get(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Retrieve multiple objects with batch processing.
+
+        Args:
+            keys: List of keys to retrieve.
+            tensors: List of tensors to populate with retrieved data.
+        """
         batch_size = self.MAX_KEYS_PER_BATCH
         for i in range(0, len(keys), batch_size):
             self._get_batch(keys[i : i + batch_size], tensors[i : i + batch_size])
 
     @abstractmethod
-    def _get_batch(self, keys, tensors):
-        """Process a single batch of get operations."""
+    def _get_batch(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Process a single batch of get operations.
+
+        Args:
+            keys: List of keys for this batch.
+            tensors: List of tensors for this batch.
+        """
         pass
 
-    def delete(self, keys):
-        """Delete multiple keys with batch processing."""
+    def delete(self, keys: List[str]) -> None:
+        """Delete multiple keys with batch processing.
+
+        Args:
+            keys: List of keys to delete.
+        """
         batch_size = self.MAX_KEYS_PER_BATCH
         for i in range(0, len(keys), batch_size):
             self._delete_batch(keys[i : i + batch_size])
 
     @abstractmethod
-    def _delete_batch(self, keys):
-        """Process a single batch of delete operations."""
+    def _delete_batch(self, keys: List[str]) -> None:
+        """Process a single batch of delete operations.
+
+        Args:
+            keys: List of keys for this batch.
+        """
         pass
 
 
 class CPUClientAdapter(BaseDSAdapter):
+    """DS client adapter for CPU tensors using structured binary packing."""
+
     # Header: number of entries (uint32, little-endian)
-    HEADER_FMT = "<I"
-    HEADER_SIZE = struct.calcsize(HEADER_FMT)
+    HEADER_FMT: str = "<I"
+    HEADER_SIZE: int = struct.calcsize(HEADER_FMT)
     # Entry: (payload_offset: uint32, payload_size: uint32)
-    ENTRY_FMT = "<II"
-    ENTRY_SIZE = struct.calcsize(ENTRY_FMT)
+    ENTRY_FMT: str = "<II"
+    ENTRY_SIZE: int = struct.calcsize(ENTRY_FMT)
 
-    DS_MAX_WORKERS = 4
+    DS_MAX_WORKERS: int = 4
 
-    def __init__(self, host, port):
+    def __init__(self, host: str, port: int):
+        """Initialize CPUClientAdapter with DS server address.
+
+        Args:
+            host: DS server host address.
+            port: DS server port.
+
+        Raises:
+            RuntimeError: If 'datasystem' dependency is not installed.
+        """
         if not YR_AVAILABLE:
             raise RuntimeError(
                 "Missing optional dependency 'datasystem'. Install with: "
                 "'pip install openyuanrong-datasystem' to use CPUClientAdapter."
             )
         self._client = KVClient(host=host, port=port)
-        self.local_tensors = []
+        self.local_tensors: List["torch.Tensor"] = []
 
-    def init(self):
+    def init(self) -> None:
+        """Initialize the KV client connection."""
         self._client.init()
 
     @classmethod
-    def calc_packed_size(cls, items: list[memoryview]) -> int:
-        """
-        Calculate the total size (in bytes) required to pack a list of memoryview items
+    def calc_packed_size(cls, items: List[memoryview]) -> int:
+        """Calculate the total size (in bytes) required to pack a list of memoryview items
         into the structured binary format used by pack_into.
 
         Args:
@@ -125,9 +174,8 @@ class CPUClientAdapter(BaseDSAdapter):
         )
 
     @classmethod
-    def pack_into(cls, target: memoryview, items: list[memoryview]):
-        """
-        Pack multiple contiguous buffers into a single buffer.
+    def pack_into(cls, target: memoryview, items: List[memoryview]) -> None:
+        """Pack multiple contiguous buffers into a single buffer.
             ┌───────────────┐
             │ item_count    │  uint32
             ├───────────────┤
@@ -137,10 +185,10 @@ class CPUClientAdapter(BaseDSAdapter):
             └───────────────┘
 
         Args:
-            target (memoryview): A writable memoryview returned by StateValueBuffer.MutableData().
+            target: A writable memoryview returned by StateValueBuffer.MutableData().
                 It must be large enough to accommodate the total number of bytes of HEADER + ENTRY_TABLE + all items.
                 This buffer is usually mapped to shared memory or Zero-Copy memory area.
-            items (List[memoryview]): List of read-only memory views (e.g., from serialized objects).
+            items: List of read-only memory views (e.g., from serialized objects).
                 Each item must support the buffer protocol and be readable as raw bytes.
 
         """
@@ -163,13 +211,14 @@ class CPUClientAdapter(BaseDSAdapter):
             payload_offset += item.nbytes
 
     @classmethod
-    def unpack_from(cls, source: memoryview) -> list[memoryview]:
-        """
-        Unpack multiple contiguous buffers from a single packed buffer.
+    def unpack_from(cls, source: memoryview) -> List[memoryview]:
+        """Unpack multiple contiguous buffers from a single packed buffer.
+
         Args:
-            source (memoryview): The packed source buffer.
+            source: The packed source buffer.
+
         Returns:
-            list[memoryview]: List of unpacked contiguous buffers.
+            List of unpacked contiguous buffers.
         """
         mv = memoryview(source)
         item_count = struct.unpack_from(cls.HEADER_FMT, mv, 0)[0]
@@ -181,8 +230,16 @@ class CPUClientAdapter(BaseDSAdapter):
             offsets.append((offset, length))
         return [mv[offset : offset + length] for offset, length in offsets]
 
-    def _put_batch(self, keys: list[str], tensors: list[torch.Tensor]):
-        """Process a single batch of put operations."""
+    def _put_batch(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Process a single batch of put operations.
+
+        Args:
+            keys: List of keys for this batch.
+            tensors: List of tensors for this batch.
+
+        Raises:
+            RuntimeError: If any keys fail to be put.
+        """
         items_list = [[memoryview(b) for b in _encoder.encode(obj)] for obj in tensors]
         packed_sizes = [self.calc_packed_size(items) for items in items_list]
         buffers = self._client.mcreate(keys, packed_sizes)
@@ -199,26 +256,57 @@ class CPUClientAdapter(BaseDSAdapter):
                 list(executor.map(lambda p: self.pack_into(*p), tasks))
         self._client.mset_buffer(buffers)
 
-    def _get_batch(self, keys: list[str], tensors: list[torch.Tensor]):
-        """Process a single batch of get operations."""
+    def _get_batch(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Process a single batch of get operations.
+
+        Args:
+            keys: List of keys for this batch.
+            tensors: List of tensors to populate with retrieved data.
+
+        Raises:
+            RuntimeError: If any key fails to be retrieved.
+        """
         buffers = self._client.get_buffers(keys)
         for i, buffer in enumerate(buffers):
             if buffer is None:
                 raise RuntimeError(f"Failed to get key: {keys[i]}")
             tensors[i] = _decoder.decode(self.unpack_from(buffer))
 
-    def _delete_batch(self, keys):
-        """Process a single batch of delete operations."""
+    def _delete_batch(self, keys: List[str]) -> None:
+        """Process a single batch of delete operations.
+
+        Args:
+            keys: List of keys for this batch.
+
+        Raises:
+            RuntimeError: If any keys fail to be deleted.
+        """
         failed_keys = self._client.delete(keys=keys)
         raise_if_failed(failed_keys, "delete")
 
-    def health_check(self):
-        return self._client.health_check().is_ok()
+    def health_check(self) -> bool:
+        """Check if the DS client is healthy.
+
+        Returns:
+            True if the client is healthy, False otherwise.
+        """
+        is_healthy: bool = self._client.health_check().is_ok()
+        return is_healthy
 
 
 class NPUClientAdapter(BaseDSAdapter):
+    """DS client adapter for NPU tensors using device-direct operations."""
 
-    def __init__(self, host, port):
+    def __init__(self, host: str, port: int):
+        """Initialize NPUClientAdapter with DS server address.
+
+        Args:
+            host: DS server host address.
+            port: DS server port.
+
+        Raises:
+            RuntimeError: If 'datasystem' or NPU support is not installed.
+        """
         if not NPU_AVAILABLE:
             raise RuntimeError(
                 "Missing optional dependency 'datasystem' or NPU support. Install with: "
@@ -232,20 +320,44 @@ class NPUClientAdapter(BaseDSAdapter):
             connect_timeout_ms=60000,
         )
 
-    def init(self):
+    def init(self) -> None:
+        """Initialize the DsTensorClient connection."""
         self._client.init()
 
-    def _put_batch(self, keys, tensors):
-        """Process a single batch of put operations."""
+    def _put_batch(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Process a single batch of put operations for NPU tensors.
+
+        Args:
+            keys: List of keys for this batch.
+            tensors: List of NPU tensors for this batch.
+
+        Raises:
+            RuntimeError: If any keys fail to be put.
+        """
         failed_keys = self._client.dev_mset(keys=keys, tensors=tensors)
         raise_if_failed(failed_keys, "put")
 
-    def _get_batch(self, keys, tensors):
-        """Process a single batch of get operations."""
+    def _get_batch(self, keys: List[str], tensors: List["torch.Tensor"]) -> None:
+        """Process a single batch of get operations for NPU tensors.
+
+        Args:
+            keys: List of keys for this batch.
+            tensors: List of NPU tensors to populate with retrieved data.
+
+        Raises:
+            RuntimeError: If any keys fail to be retrieved.
+        """
         failed_keys = self._client.dev_mget(keys=keys, tensors=tensors)
         raise_if_failed(failed_keys, "get")
 
-    def _delete_batch(self, keys):
-        """Process a single batch of delete operations."""
+    def _delete_batch(self, keys: List[str]) -> None:
+        """Process a single batch of delete operations for NPU tensors.
+
+        Args:
+            keys: List of keys for this batch.
+
+        Raises:
+            RuntimeError: If any keys fail to be deleted.
+        """
         failed_keys = self._client.dev_delete(keys=keys)
         raise_if_failed(failed_keys, "delete")

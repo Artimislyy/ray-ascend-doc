@@ -12,13 +12,19 @@ class SimpleTensorEncoder:
     It mimics the interface of MsgpackEncoder.encode() but skips msgpack entirely.
     """
 
-    def encode(self, obj: torch.Tensor) -> Sequence[bytestr]:
-        """
-        Encode a single torch.Tensor in zero-copy mode.
+    def encode(self, obj: "torch.Tensor") -> Sequence[bytestr]:
+        """Encode a single torch.Tensor in zero-copy mode.
+
+        Args:
+            obj: The torch.Tensor to encode.
 
         Returns:
             A list [meta_bytes, raw_data_buffer] which is compatible with
             the original MsgpackEncoder's return type.
+
+        Raises:
+            TypeError: If obj is not a torch.Tensor.
+            ValueError: If obj is sparse, nested, or not dense.
         """
         if not isinstance(obj, torch.Tensor):
             raise TypeError("SimpleTensorEncoder only supports torch.Tensor")
@@ -40,7 +46,7 @@ class SimpleTensorEncoder:
         # Serialize metadata to bytes using pickle (for simplicity and compatibility)
         meta_bytes = pickle.dumps(meta_tuple, protocol=pickle.HIGHEST_PROTOCOL)
 
-        bufs: list[bytestr] = [meta_bytes, raw_data]
+        bufs = [meta_bytes, raw_data]
         return bufs
 
 
@@ -50,15 +56,17 @@ class SimpleTensorDecoder:
     It mimics the interface of MsgpackDecoder.decode() but skips msgpack entirely.
     """
 
-    def decode(self, bufs: Sequence[bytestr]) -> torch.Tensor:
-        """
-        Decode a list of bytes into a torch.Tensor.
+    def decode(self, bufs: Sequence[bytestr]) -> "torch.Tensor":
+        """Decode a list of bytes into a torch.Tensor.
 
         Args:
             bufs: A sequence [meta_bytes, raw_data_buffer].
 
         Returns:
             The reconstructed torch.Tensor.
+
+        Raises:
+            ValueError: If bufs is a single bytes object instead of a sequence.
         """
         if isinstance(bufs, bytestr):
             raise ValueError(

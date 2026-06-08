@@ -3,6 +3,8 @@ ray-ascend is a community maintained hardware plugin to support advanced Ray fea
 on Ascend NPU accelerators.
 """
 
+from typing import List
+
 from ray_ascend import _version
 
 __all__ = [
@@ -17,7 +19,7 @@ __commit__ = _version.commit
 __version__ = _version.version
 
 
-def register_yr_tensor_transport(devices=["npu", "cpu"]) -> None:
+def register_yr_tensor_transport(devices: List[str] = ["npu", "cpu"]) -> None:
     """
     Register YR tensor transport for Ray and initialize YR backend.
 
