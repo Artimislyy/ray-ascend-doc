@@ -163,10 +163,11 @@ def register_hccl_tensor_transport() -> None:
             def transfer_npu_tensor_via_hccs(self):
                 return torch.tensor([1, 2, 3]).npu()
     """
+    register_hccl_collective_backend()
+
     import torch
     from ray.experimental import register_tensor_transport
 
     from .direct_transport.hccl_tensor_transport import HCCLTensorTransport
 
-    register_hccl_collective_backend()
     register_tensor_transport("HCCL", ["npu"], HCCLTensorTransport, torch.Tensor)
