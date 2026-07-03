@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 pytest.importorskip(
@@ -7,7 +9,10 @@ pytest.importorskip(
 
 import ray
 import torch
-from ray.experimental.collective import create_collective_group
+from ray.experimental.collective import (
+    create_collective_group,
+    destroy_collective_group,
+)
 from ray.util.collective import (
     allgather,
     allreduce,
@@ -22,14 +27,13 @@ from ray.util.collective.types import ReduceOp
 from ray_ascend import register_hccl_collective_backend
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def actors(ray_cluster_with_npu):
     register_hccl_collective_backend()
     world_size = 2
-    group_name = "hccl_group"
+    group_name = f"hccl_group_{uuid.uuid4().hex[:8]}"
     actors = [HCCLRegistryTestActor.remote(group_name) for _ in range(world_size)]
 
-    # Create collective group using Ray's experimental interface
     create_collective_group(
         actors=actors,
         backend="HCCL",
@@ -38,11 +42,15 @@ def actors(ray_cluster_with_npu):
 
     yield actors
 
+    # Clean teardown to avoid cross-test HCCL state leakage.
+    try:
+        destroy_collective_group(group_name)
+    except Exception:
+        pass
     for actor in actors:
         try:
-            ray.get(actor.destroy.remote())
+            ray.kill(actor)
         except Exception:
-            # Best-effort cleanup; rely on Ray shutdown for process teardown.
             pass
 
 

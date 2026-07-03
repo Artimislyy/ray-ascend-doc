@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 pytest.importorskip(
@@ -7,23 +9,26 @@ pytest.importorskip(
 
 import ray
 import torch
-from ray.experimental.collective import create_collective_group
+from ray.experimental.collective import (
+    create_collective_group,
+    destroy_collective_group,
+)
 
 from ray_ascend import register_hccl_tensor_transport
 
 register_hccl_tensor_transport()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def actors(ray_cluster_with_npu):
-    """Create actors with HCCL tensor transport registered."""
+    """Create actors with HCCL tensor transport registered (function-scoped
+    with a unique group to avoid cross-test state leakage)."""
     world_size = 2
-    group_name = "hccl_transport_group"
+    group_name = f"hccl_transport_group_{uuid.uuid4().hex[:8]}"
     actors = [
         HCCLTensorTransportTestActor.remote(group_name) for _ in range(world_size)
     ]
 
-    # Create collective group using Ray's experimental interface
     create_collective_group(
         actors=actors,
         backend="HCCL",
@@ -31,6 +36,16 @@ def actors(ray_cluster_with_npu):
     )
 
     yield actors
+
+    try:
+        destroy_collective_group(group_name)
+    except Exception:
+        pass
+    for actor in actors:
+        try:
+            ray.kill(actor)
+        except Exception:
+            pass
 
 
 @ray.remote(resources={"NPU": 1})

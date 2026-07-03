@@ -125,7 +125,10 @@ def register_hccl_collective_backend() -> None:
         )
     """
     try:
-        from ray.util.collective.backend_registry import register_collective_backend
+        from ray.util.collective.backend_registry import (
+            _global_registry,
+            register_collective_backend,
+        )
     except ImportError as e:
         import ray
 
@@ -136,6 +139,10 @@ def register_hccl_collective_backend() -> None:
         ) from e
 
     from .collective.hccl_collective_group import HCCLGroup
+
+    # Idempotent: safe to call from both driver and each actor's __init__.
+    if _global_registry.is_registered("HCCL"):
+        return
 
     register_collective_backend("HCCL", HCCLGroup)
 
@@ -167,7 +174,12 @@ def register_hccl_tensor_transport() -> None:
 
     import torch
     from ray.experimental import register_tensor_transport
+    from ray.experimental.rdt.util import transport_manager_info
 
     from .direct_transport.hccl_tensor_transport import HCCLTensorTransport
+
+    # Idempotent: Ray auto-syncs transport_manager_info into actors on startup.
+    if "HCCL" in transport_manager_info:
+        return
 
     register_tensor_transport("HCCL", ["npu"], HCCLTensorTransport, torch.Tensor)
