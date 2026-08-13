@@ -187,7 +187,7 @@ def register_hixl_tensor_transport(devices: List[str] = ["npu", "cpu"]) -> None:
     sender's memory.
 
     Requirements:
-        - HIXL Engine wheel installed: pip install hixl_engine-0.0.1-py3-none-any.whl
+        - HIXL wheel installed: pip install hixl
         - CANN driver and runtime installed on all NPU nodes
         - RDMA/HCCS links established between nodes
 
@@ -229,19 +229,19 @@ def register_hixl_tensor_transport(devices: List[str] = ["npu", "cpu"]) -> None:
         )
     except ImportError as e:
         raise ImportError(
-            "HIXL tensor transport requires the hixl_engine package. "
+            "HIXL tensor transport requires the hixl package. "
             "Please install it with: "
-            "pip install hixl_engine-0.0.1-py3-none-any.whl"
+            "pip install hixl"
         ) from e
 
-    # Verify hixl_wrapper is importable before registration.
+    # Verify hixl is importable before registration.
     try:
-        import hixl_wrapper
+        import hixl
     except ImportError as e:
         raise ImportError(
-            "hixl_wrapper module not found. HIXL tensor transport requires "
-            "the HIXL Engine wheel. Please install: "
-            "pip install hixl_engine-0.0.1-py3-none-any.whl"
+            "hixl module not found. HIXL tensor transport requires "
+            "the hixl wheel. Please install: "
+            "pip install hixl"
         ) from e
 
     register_tensor_transport("HIXL", devices, HixlTensorTransport, torch.Tensor)
