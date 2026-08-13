@@ -281,9 +281,8 @@ class HCCLGroup(BaseGroup):
         Returns:
             None
         """
-        # Handle case where tensor_list is wrapped in another list by Ray's collective.py
-        if tensor_list and isinstance(tensor_list[0], list):
-            tensor_list = tensor_list[0]
+        tensor = _unwrap_single(tensor)
+        tensor_list = _unwrap_tensor_list(tensor_list)
 
         def collective_fn(
             input_tensor: torch.Tensor,
@@ -308,15 +307,15 @@ class HCCLGroup(BaseGroup):
                 current_stream.wait_event(event)
             logger.debug(f"HcclAllGather execute result : {exec_result}")
 
-        output_flattened = [_flatten_for_scatter_gather(tensor_list, copy=False)]
+        output_flattened = _flatten_for_scatter_gather(tensor_list, copy=False)
 
         input_tensor = self._validate_tensor(tensor)
-        output_tensor = self._validate_tensor(output_flattened[0])
+        output_tensor = self._validate_tensor(output_flattened)
         comm, stream = self._validate_collective_state()
         collective_fn(input_tensor, output_tensor, comm, stream)
 
         for j, out_tensor in enumerate(tensor_list):
-            out_tensor.copy_(output_flattened[0][j])
+            out_tensor.copy_(output_flattened[j])
 
     def allreduce(
         self,
@@ -440,17 +439,19 @@ class HCCLGroup(BaseGroup):
         Returns:
             None
         """
+        tensor = _unwrap_single(tensor)
+        tensor_list = _unwrap_tensor_list(tensor_list)
 
-        input_flattened = [_flatten_for_scatter_gather(tensor_list, copy=False)]
+        input_flattened = _flatten_for_scatter_gather(tensor_list, copy=False)
 
-        input_tensor = self._validate_tensor(input_flattened[0])
+        input_tensor = self._validate_tensor(input_flattened)
         output_tensor = self._validate_tensor(tensor)
         comm, stream = self._validate_collective_state()
 
         # Copy tensors and record event for proper stream synchronization
         copy_stream = torch.npu.current_stream()
         for j, in_tensor in enumerate(tensor_list):
-            input_flattened[0][j].copy_(in_tensor)
+            input_flattened[j].copy_(in_tensor)
         copy_event = torch.npu.Event()
         copy_event.record(copy_stream)
 
@@ -482,8 +483,7 @@ class HCCLGroup(BaseGroup):
 
         collective_fn(input_tensor, output_tensor, comm, stream)
 
-        # Record completion event on HCCL stream and wait on caller's current stream
-        # This ensures output_tensor is ready before caller reads it
+        # Ensure output_tensor is fully written before the caller reads it.
         completion_event = torch.npu.Event()
         completion_event.record(stream)
         torch.npu.current_stream().wait_event(completion_event)
@@ -743,6 +743,28 @@ class HCCLGroup(BaseGroup):
         if self._comm is None or self._stream is None:
             raise RuntimeError("Collective communicator is not initialized.")
         return self._comm, self._stream
+
+
+def _unwrap_single(obj):
+    """Unwrap a single-element wrapper list from Ray's collective.py."""
+    if isinstance(obj, list):
+        assert len(obj) == 1, (
+            "expected a single tensor or a single-element wrapper like `[t]`, "
+            f"got a list of length {len(obj)}"
+        )
+        return obj[0]
+    return obj
+
+
+def _unwrap_tensor_list(tensor_list):
+    """Unwrap a tensor list wrapped in a single-element outer list."""
+    if tensor_list and isinstance(tensor_list[0], list):
+        assert len(tensor_list) == 1, (
+            "expected a tensor list like `[t1, t2]` or a single-element "
+            f"wrapper like `[[t1, t2]]`, got a list of length {len(tensor_list)}"
+        )
+        return tensor_list[0]
+    return tensor_list
 
 
 def get_tensor_device(tensor: torch.Tensor) -> int:
