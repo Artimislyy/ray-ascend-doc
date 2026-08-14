@@ -35,7 +35,10 @@ def stage_source():
     print("\n=== STAGE 1: SOURCE (init + register_mem) ===")
     torch.npu.set_device(0)
     src = hixl.Hixl()
-    st = src.initialize(SRC_ENGINE, {})
+    # OPTION_AUTO_CONNECT=1 is what the official sample sets on both sides;
+    # the transport's _ensure_hixl_initialized passes empty {} instead.
+    options = {hixl.OPTION_AUTO_CONNECT: "1"}
+    st = src.initialize(SRC_ENGINE, options)
     print(f"  src.initialize -> status={st} (SUCCESS={hixl.SUCCESS})")
     assert st == hixl.SUCCESS, f"src init failed status={st}"
 
@@ -56,9 +59,12 @@ def stage_source():
 
 def stage_driver(src_engine_id, meta):
     print("\n=== STAGE 2: DRIVER (2nd engine, connect, transfer_async) ===")
-    torch.npu.set_device(0)
+    # Official sample uses distinct NPU devices for server/client; mirror that
+    # to rule out same-device context collision as the connect failure cause.
+    torch.npu.set_device(1)
     dst = hixl.Hixl()
-    st = dst.initialize(DST_ENGINE, {})
+    options = {hixl.OPTION_AUTO_CONNECT: "1"}
+    st = dst.initialize(DST_ENGINE, options)
     print(f"  dst.initialize -> status={st} (SUCCESS={hixl.SUCCESS})")
     assert st == hixl.SUCCESS, f"dst init failed status={st}"
 
