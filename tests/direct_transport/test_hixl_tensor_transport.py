@@ -27,6 +27,8 @@ from ray.experimental.rdt.tensor_transport_manager import (
     TensorTransportMetadata,
 )
 
+register_hixl_tensor_transport(["npu", "cpu"])
+
 DEFAULT_NPU_COUNT = 2
 
 @pytest.fixture(scope="session")
