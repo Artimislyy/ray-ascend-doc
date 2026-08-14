@@ -176,6 +176,22 @@ class HixlTensorTransport(TensorTransportManager):
     def can_abort_transport() -> bool:
         return True
 
+    def finalize(self) -> None:
+        """Explicitly release the HIXL engine's process-level resources."""
+        if not self._hixl_initialized:
+            return
+        try:
+            assert self._hixl_engine is not None
+            self._hixl_engine.finalize()
+        except Exception:
+            logger.warning(
+                "HIXL engine finalize raised an exception", exc_info=True
+            )
+        finally:
+            self._hixl_initialized = False
+            self._hixl_engine = None
+            self._remote_engines.clear()
+
     def _ensure_hixl_initialized(self):
         """Lazily initializes the HIXL engine.
 
@@ -654,34 +670,35 @@ class HixlTensorTransport(TensorTransportManager):
         the cache is never consulted: every call connects directly without
         caching.
         """
-        if HIXL_REMOTE_ENGINE_CACHE_MAXSIZE > 0:
-            if remote_engine_id in self._remote_engines:
-                cached_version = self._remote_engines[remote_engine_id]
-                if cached_version != remote_engine_mem_generation:
-                    self._disconnect_remote_engine(remote_engine_id)
-                else:
-                    self._remote_engines.move_to_end(remote_engine_id)
-                    return
+        with self._cache_lock:
+            if HIXL_REMOTE_ENGINE_CACHE_MAXSIZE > 0:
+                if remote_engine_id in self._remote_engines:
+                    cached_version = self._remote_engines[remote_engine_id]
+                    if cached_version != remote_engine_mem_generation:
+                        self._disconnect_remote_engine(remote_engine_id)
+                    else:
+                        self._remote_engines.move_to_end(remote_engine_id)
+                        return
 
-            elif len(self._remote_engines) >= HIXL_REMOTE_ENGINE_CACHE_MAXSIZE:
-                evicted_engine_id, _ = self._remote_engines.popitem(last=False)
-                self._disconnect_remote_engine(evicted_engine_id)
+                elif len(self._remote_engines) >= HIXL_REMOTE_ENGINE_CACHE_MAXSIZE:
+                    evicted_engine_id, _ = self._remote_engines.popitem(last=False)
+                    self._disconnect_remote_engine(evicted_engine_id)
 
-            status = self._hixl_engine.connect(remote_engine_id)
-            if status != hixl.SUCCESS and status != hixl.ALREADY_CONNECTED:
-                raise RuntimeError(
-                    f"HIXL Connect to '{remote_engine_id}' failed, "
-                    f"status={status}"
-                )
+                status = self._hixl_engine.connect(remote_engine_id)
+                if status != hixl.SUCCESS and status != hixl.ALREADY_CONNECTED:
+                    raise RuntimeError(
+                        f"HIXL Connect to '{remote_engine_id}' failed, "
+                        f"status={status}"
+                    )
 
-            self._remote_engines[remote_engine_id] = remote_engine_mem_generation
-        else:
-            status = self._hixl_engine.connect(remote_engine_id)
-            if status != hixl.SUCCESS and status != hixl.ALREADY_CONNECTED:
-                raise RuntimeError(
-                    f"HIXL Connect to '{remote_engine_id}' failed, "
-                    f"status={status}"
-                )
+                self._remote_engines[remote_engine_id] = remote_engine_mem_generation
+            else:
+                status = self._hixl_engine.connect(remote_engine_id)
+                if status != hixl.SUCCESS and status != hixl.ALREADY_CONNECTED:
+                    raise RuntimeError(
+                        f"HIXL Connect to '{remote_engine_id}' failed, "
+                        f"status={status}"
+                    )
 
     def _disconnect_remote_engine(self, remote_engine_id: str) -> None:
         """Disconnect from a remote HIXL engine (best-effort)."""

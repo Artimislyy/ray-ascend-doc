@@ -56,13 +56,7 @@ def transport():
     """A bare HixlTensorTransport. teardown finalizes the engine if initialized."""
     t = HixlTensorTransport()
     yield t
-    if t._hixl_initialized and t._hixl_engine is not None:
-        try:
-            t._hixl_engine.finalize()
-        except Exception:
-            pass
-        t._hixl_initialized = False
-        t._hixl_engine = None
+    t.finalize()
 
 class TestTransportProperties:
     """Verify static properties and class identity without hardware."""
