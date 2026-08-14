@@ -6,7 +6,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, cast
 
 import ray
 from ray.experimental.rdt.tensor_transport_manager import (
@@ -184,16 +184,26 @@ class HixlTensorTransport(TensorTransportManager):
             assert self._hixl_engine is not None
             self._hixl_engine.finalize()
         except Exception:
-            logger.warning(
-                "HIXL engine finalize raised an exception", exc_info=True
-            )
+            logger.warning("HIXL engine finalize raised an exception", exc_info=True)
         finally:
             self._hixl_initialized = False
             self._hixl_engine = None
             self._remote_engines.clear()
 
-    def _ensure_hixl_initialized(self):
-        """Lazily initializes the HIXL engine.
+    @staticmethod
+    def _allocate_listen_port() -> int:
+        """Reserve a free TCP port for the HIXL engine to listen on."""
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("", 0))
+            return cast(int, sock.getsockname()[1])
+        finally:
+            sock.close()
+
+    def _ensure_hixl_initialized(self) -> None:
+        """Lazily initialize the HIXL engine.
 
         Raises:
             ImportError: If hixl is not installed.
@@ -203,9 +213,7 @@ class HixlTensorTransport(TensorTransportManager):
             return
 
         if hixl is None:
-            raise ImportError(
-                "hixl module not found. "
-            )
+            raise ImportError("hixl module not found. ")
 
         with self._cache_lock:
             if self._hixl_initialized:
@@ -217,7 +225,11 @@ class HixlTensorTransport(TensorTransportManager):
                 actor_id = f"RAY-DRIVER-{uuid.uuid4()}"
 
             node_ip = ray.util.get_node_ip_address()
-            self._local_engine_id = f"{node_ip}:{actor_id}"
+            listen_port = self._allocate_listen_port()
+            self._local_engine_id = f"{node_ip}:{listen_port}"
+            import torch
+
+            torch.npu.set_device(0)
 
             try:
                 self._hixl_engine = hixl.Hixl()
@@ -243,6 +255,7 @@ class HixlTensorTransport(TensorTransportManager):
 
     def actor_has_tensor_transport(self, actor: "ray.actor.ActorHandle") -> bool:
         """Check if a remote actor has the HIXL transport available."""
+
         # TODO: This is called on a .remote RDT call, so it's quite expensive.
         def __ray_actor_has_tensor_transport__(
             self: "ray.actor.ActorHandle",
@@ -256,11 +269,12 @@ class HixlTensorTransport(TensorTransportManager):
             except Exception:
                 return False
 
-        return ray.get(
+        result = ray.get(
             actor.__ray_call__.options(concurrency_group="_ray_system").remote(
                 __ray_actor_has_tensor_transport__
             )
         )
+        return bool(result)
 
     def register_hixl_memory(self, tensor: "torch.Tensor") -> None:
         """Registers the tensor's memory with HIXL and bumps the reference
@@ -289,6 +303,7 @@ class HixlTensorTransport(TensorTransportManager):
         engine.register_mem and cache the handle + registration params.
         """
         self._ensure_hixl_initialized()
+        assert self._hixl_engine is not None
 
         with self._cache_lock:
             for tensor in tensors:
@@ -332,8 +347,7 @@ class HixlTensorTransport(TensorTransportManager):
                 )
 
     def _remove_tensor_descs(self, tensors: List["torch.Tensor"]):
-        """Decrement reference counts and deregister when they reach zero.
-        """
+        """Decrement reference counts and deregister when they reach zero."""
         with self._cache_lock:
             for tensor in tensors:
                 key = tensor.untyped_storage().data_ptr()
@@ -343,8 +357,11 @@ class HixlTensorTransport(TensorTransportManager):
                 tensor_desc.metadata_count -= 1
                 if tensor_desc.metadata_count == 0:
                     self._tensor_desc_cache.pop(key)
+                    assert self._hixl_engine is not None
                     try:
-                        status = self._hixl_engine.deregister_mem(tensor_desc.mem_handle)
+                        status = self._hixl_engine.deregister_mem(
+                            tensor_desc.mem_handle
+                        )
                         if status != hixl.SUCCESS:
                             logger.warning(
                                 f"HIXL DeregisterMem returned status={status} "
@@ -477,9 +494,7 @@ class HixlTensorTransport(TensorTransportManager):
         with self._aborted_transfer_obj_ids_lock:
             if obj_id in self._aborted_transfer_obj_ids:
                 self._aborted_transfer_obj_ids.remove(obj_id)
-                raise RuntimeError(
-                    f"HIXL transfer aborted for object id: {obj_id}"
-                )
+                raise RuntimeError(f"HIXL transfer aborted for object id: {obj_id}")
 
         transfer_req = None
         added_tensor_descs = False
@@ -489,18 +504,17 @@ class HixlTensorTransport(TensorTransportManager):
 
         try:
             self._ensure_hixl_initialized()
+            assert self._hixl_engine is not None
             self._add_tensor_descs(tensors)
             added_tensor_descs = True
 
+            assert serialized_mem_descs is not None
             remote_mem_descs = pickle.loads(serialized_mem_descs)
 
-            remote_engine_mem_generation = (
-                tensor_transport_metadata.hixl_mem_generation
-            )
-
-            self._connect_remote_engine(
-                remote_engine_id, remote_engine_mem_generation
-            )
+            remote_engine_mem_generation = tensor_transport_metadata.hixl_mem_generation
+            assert remote_engine_id is not None
+            assert remote_engine_mem_generation is not None
+            self._connect_remote_engine(remote_engine_id, remote_engine_mem_generation)
 
             op_descs = []
             for i, t in enumerate(tensors):
@@ -537,7 +551,10 @@ class HixlTensorTransport(TensorTransportManager):
             return fetch_request
         except Exception:
             self._cleanup_transfer(
-                obj_id, tensors, transfer_req, remote_engine_id,
+                obj_id,
+                tensors,
+                transfer_req,
+                remote_engine_id,
                 added_tensor_descs,
             )
             if fetch_request is not None:
@@ -577,9 +594,10 @@ class HixlTensorTransport(TensorTransportManager):
         obj_id = fetch_request.obj_id
 
         if not fetch_request.tensors:
-            return fetch_request.tensors
+            return cast(List["torch.Tensor"], fetch_request.tensors)
 
         try:
+            assert self._hixl_engine is not None
             deadline = None if timeout < 0 else time.monotonic() + timeout
             while True:
                 status, transfer_status = self._hixl_engine.get_transfer_status(
@@ -615,7 +633,7 @@ class HixlTensorTransport(TensorTransportManager):
                 elif transfer_status == hixl.TransferStatus.COMPLETED:
                     break
 
-            return fetch_request.tensors
+            return cast(List["torch.Tensor"], fetch_request.tensors)
         except TimeoutError:
             raise
         except Exception:
@@ -636,8 +654,7 @@ class HixlTensorTransport(TensorTransportManager):
         remote_engine_id: Optional[str],
         remove_tensor_descs: bool,
     ) -> None:
-        """Best-effort cleanup after a transfer completes or fails.
-        """
+        """Best-effort cleanup after a transfer completes or fails."""
         if not self._hixl_initialized:
             return
 
@@ -671,6 +688,7 @@ class HixlTensorTransport(TensorTransportManager):
         caching.
         """
         with self._cache_lock:
+            assert self._hixl_engine is not None
             if HIXL_REMOTE_ENGINE_CACHE_MAXSIZE > 0:
                 if remote_engine_id in self._remote_engines:
                     cached_version = self._remote_engines[remote_engine_id]
@@ -702,6 +720,7 @@ class HixlTensorTransport(TensorTransportManager):
 
     def _disconnect_remote_engine(self, remote_engine_id: str) -> None:
         """Disconnect from a remote HIXL engine (best-effort)."""
+        assert self._hixl_engine is not None
         try:
             self._hixl_engine.disconnect(remote_engine_id)
         except Exception:
@@ -719,7 +738,9 @@ class HixlTensorTransport(TensorTransportManager):
     ) -> List["torch.Tensor"]:
         """Receives multiple tensors synchronously (fetch + wait)."""
         fetch_request = self.fetch_multiple_tensors(
-            obj_id, tensor_transport_metadata, communicator_metadata,
+            obj_id,
+            tensor_transport_metadata,
+            communicator_metadata,
             target_buffers,
         )
         return self.wait_fetch_complete(fetch_request)

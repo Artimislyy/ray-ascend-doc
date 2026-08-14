@@ -9,8 +9,13 @@ import threading
 import hixl
 import ray
 import torch
-
 from ray.exceptions import RayDirectTransportError
+from ray.experimental.rdt.tensor_transport_manager import (
+    CommunicatorMetadata,
+    FetchRequest,
+    TensorTransportManager,
+    TensorTransportMetadata,
+)
 
 from ray_ascend import register_hixl_tensor_transport
 from ray_ascend.direct_transport.hixl_tensor_transport import (
@@ -20,16 +25,11 @@ from ray_ascend.direct_transport.hixl_tensor_transport import (
     HixlTensorTransport,
     HixlTransportMetadata,
 )
-from ray.experimental.rdt.tensor_transport_manager import (
-    CommunicatorMetadata,
-    FetchRequest,
-    TensorTransportManager,
-    TensorTransportMetadata,
-)
 
 register_hixl_tensor_transport(["npu", "cpu"])
 
 DEFAULT_NPU_COUNT = 2
+
 
 @pytest.fixture(scope="session")
 def ray_cluster_with_npu():
@@ -43,9 +43,7 @@ def ray_cluster_with_npu():
         )
     if not ray.is_initialized():
         try:
-            ray.init(
-                ignore_reinit_error=True, resources={"NPU": DEFAULT_NPU_COUNT}
-            )
+            ray.init(ignore_reinit_error=True, resources={"NPU": DEFAULT_NPU_COUNT})
         except ValueError:
             ray.init(ignore_reinit_error=True)
     yield
@@ -59,6 +57,7 @@ def transport():
     t = HixlTensorTransport()
     yield t
     t.finalize()
+
 
 class TestTransportProperties:
     """Verify static properties and class identity without hardware."""
@@ -138,6 +137,7 @@ class TestDataClasses:
         assert req.remote_engine_id == "10.0.0.1:12345"
         assert req.remove_tensor_descs is True
 
+
 class TestNpuMemoryRegistration:
     """Register/deregister NPU tensors against the real hixl engine."""
 
@@ -204,6 +204,7 @@ class TestNpuMemoryRegistration:
         transport._add_tensor_descs([t])
         assert transport._tensor_memory_registered(t) is True
 
+
 class TestMetadataExtraction:
     """extract_tensor_transport_metadata: register + serialize + store."""
 
@@ -269,6 +270,7 @@ class TestMetadataExtraction:
         comm = transport.get_communicator_metadata(None, None)
         assert isinstance(comm, HixlCommunicatorMetadata)
 
+
 class TestGarbageCollection:
     """garbage_collect: pop metadata, decrement ref count, deregister at zero."""
 
@@ -314,6 +316,7 @@ class TestGarbageCollection:
         transport.garbage_collect("obj2", meta2, [t])
         key = t.untyped_storage().data_ptr()
         assert key not in transport._tensor_desc_cache
+
 
 class TestAbortTransport:
     """abort_transport marks an obj_id so fetch raises and the wait loop exits.
@@ -420,6 +423,7 @@ class TestAbortTransport:
         The first call means the worker is inside the poll loop; `entered` is
         the main thread's cue to call abort_transport.
         """
+
         def _stub(_transfer_req):
             entered.set()
             return (hixl.SUCCESS, hixl.TransferStatus.WAITING)
@@ -438,8 +442,8 @@ class TestAbortTransport:
         req = self._make_fetch_request(transport, obj_id="obj_xthread")
 
         entered = threading.Event()
-        transport._hixl_engine.get_transfer_status = (
-            self._waiting_status_with_signal(entered)
+        transport._hixl_engine.get_transfer_status = self._waiting_status_with_signal(
+            entered
         )
 
         result: dict = {}
@@ -463,9 +467,7 @@ class TestAbortTransport:
             worker.join(timeout=5)
         finally:
             if worker.is_alive():
-                transport.abort_transport(
-                    "obj_xthread", HixlCommunicatorMetadata()
-                )
+                transport.abort_transport("obj_xthread", HixlCommunicatorMetadata())
                 worker.join(timeout=2)
 
         assert not worker.is_alive(), (
@@ -477,6 +479,7 @@ class TestAbortTransport:
             f"got {result.get('exc')!r}"
         )
         assert "aborted" in str(result["exc"])
+
 
 class TestRemoteEngineCache:
     """LRU eviction, version-mismatch reconnect, and reuse semantics."""
@@ -523,6 +526,7 @@ class TestRemoteEngineCache:
         finally:
             monkeypatch.setattr(hixl_mod, "HIXL_REMOTE_ENGINE_CACHE_MAXSIZE", original)
 
+
 @ray.remote(resources={"NPU": 1})
 class _HixlHealthCheckActor:
     def __init__(self):
@@ -537,6 +541,7 @@ class _HixlHealthCheckActor:
             return True
         except Exception:
             return False
+
 
 @ray.remote(resources={"NPU": 1})
 class _HixlSourceActor:
