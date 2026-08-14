@@ -19,16 +19,36 @@ If stage 2 transfer/status fails -> RDMA READ itself fails.
 """
 
 import pickle
+import socket
 
 import hixl
 import torch
 import torch_npu  # noqa: F401  ensures torch.npu exists
 
+
+def node_ip() -> str:
+    """The IP Ray would use for get_node_ip_address().
+
+    HIXL builds RDMA endpoints from the engine-id host; 127.0.0.1 is NOT a
+    valid RDMA-routable address (it caused connect status=503900 FAILED in
+    earlier probe runs). We must use the real NIC IP the NPUs RDMA over.
+    Uses the same trick as ray.util.get_node_ip_address: open a UDP socket to
+    a public address (no packets sent) and read the bound local address.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return str(s.getsockname()[0])
+    finally:
+        s.close()
+
+
+IP = node_ip()
 # Two ports so the two in-process engines listen on distinct sockets.
 # Single-process, two engines: if this *also* fails, the problem is not
 # Ray-specific (no cross-process, no actor) and we've isolated it to HIXL.
-SRC_ENGINE = "127.0.0.1:17001"
-DST_ENGINE = "127.0.0.1:17002"
+SRC_ENGINE = f"{IP}:17001"
+DST_ENGINE = f"{IP}:17002"
 
 
 def stage_source():
@@ -125,6 +145,7 @@ def stage_driver(src_engine_id, meta):
 
 def main():
     print("env: torch", torch.__version__, "npus", torch.npu.device_count())
+    print(f"node_ip={IP} src={SRC_ENGINE} dst={DST_ENGINE}")
     src, src_t, addr, nbytes, src_handle, meta = stage_source()
     try:
         recv = stage_driver(SRC_ENGINE, meta)
