@@ -1,4 +1,5 @@
 import logging
+import os
 import pickle
 import threading
 import time
@@ -202,6 +203,17 @@ class HixlTensorTransport(TensorTransportManager):
         finally:
             sock.close()
 
+    @staticmethod
+    def _resolve_npu_device_id() -> int:
+        """Resolve the NPU device id this process should bind hixl to."""
+        visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "")
+        if visible and visible != "NoDevFiles":
+            try:
+                return int(visible.split(",")[0])
+            except ValueError:
+                pass
+        return 0
+
     def _ensure_hixl_initialized(self) -> None:
         """Lazily initialize the HIXL engine.
 
@@ -229,7 +241,24 @@ class HixlTensorTransport(TensorTransportManager):
             self._local_engine_id = f"{node_ip}:{listen_port}"
             import torch
 
-            torch.npu.set_device(0)
+            torch.npu.set_device(self._resolve_npu_device_id())
+
+            # Diagnostic: log the device context this process is binding
+            # hixl to, so we can compare driver vs. source-actor values and
+            # tell whether the two RDMA endpoints land on different physical
+            # NPUs (the suspected root cause of Connect() 103900).
+            _resolved_dev = self._resolve_npu_device_id()
+            try:
+                _cur_dev = torch.npu.current_device()
+            except Exception as e:  # noqa: BLE001 - diagnostic only
+                _cur_dev = f"<err: {e}>"
+            logger.info(
+                "HIXL device context: ascend_visible_devices=%s "
+                "resolved_device_id=%s current_device=%s",
+                os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "<unset>"),
+                _resolved_dev,
+                _cur_dev,
+            )
 
             try:
                 self._hixl_engine = hixl.Hixl()

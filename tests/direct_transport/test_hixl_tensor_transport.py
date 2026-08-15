@@ -313,14 +313,30 @@ class _HixlSourceActor:
         and init flag. The driver can't reach actor attributes, so this
         surfaces the state the cache-reuse test needs.
         """
+        import os
+
+        import torch
         from ray.experimental.rdt.util import get_tensor_transport_manager
 
         mgr = get_tensor_transport_manager("HIXL")
+        # Diagnostic: what device did this process (actor) actually bind to?
+        # Read both the Ray-assigned visible-devices env var and torch_npu's
+        # notion of the current device, so we can compare against the driver's
+        # device and tell whether the two RDMA endpoints land on different
+        # physical NPUs.
+        try:
+            current_device = torch.npu.current_device()
+        except Exception as e:
+            current_device = f"<err: {e}>"
         return {
             "driver_engine_id": mgr._local_engine_id,
             "tensor_desc_cache_size": len(mgr._tensor_desc_cache),
             "remote_engines_size": len(mgr._remote_engines),
             "hixl_initialized": mgr._hixl_initialized,
+            "ascend_visible_devices": os.environ.get(
+                "ASCEND_RT_VISIBLE_DEVICES", "<unset>"
+            ),
+            "current_device": current_device,
         }
 
 
@@ -335,6 +351,17 @@ class TestEndToEndTransfer:
         """HIXL-decorated remote method returns a tensor transported via HIXL.
         Verifies content + shape + device."""
         source = _HixlSourceActor.remote()
+
+        # Force source-actor engine init and capture its device context BEFORE
+        # the transfer, so we still get the diagnostic if the transfer fails.
+        state = ray.get(source.get_cache_state.remote())
+        print(
+            "\n[DIAG] source-actor: ascend_visible_devices="
+            f"{state.get('ascend_visible_devices')} "
+            f"current_device={state.get('current_device')} "
+            f"engine_id={state.get('driver_engine_id')}"
+        )
+
         ref = source.make_tensor.remote()
         tensor = ray.get(ref)
 
