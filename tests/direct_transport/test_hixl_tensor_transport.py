@@ -319,6 +319,7 @@ class _HixlSourceActor:
         from ray.experimental.rdt.util import get_tensor_transport_manager
 
         mgr = get_tensor_transport_manager("HIXL")
+        mgr._ensure_hixl_initialized()
         # Diagnostic: what device did this process (actor) actually bind to?
         # Read both the Ray-assigned visible-devices env var and torch_npu's
         # notion of the current device, so we can compare against the driver's
@@ -360,6 +361,21 @@ class TestEndToEndTransfer:
             f"{state.get('ascend_visible_devices')} "
             f"current_device={state.get('current_device')} "
             f"engine_id={state.get('driver_engine_id')}"
+        )
+
+        # Driver-side device context: compare against the source actor's to
+        # tell whether both ends bind hixl to the same physical NPU (which
+        # would make the cross-device RDMA endpoint mismatch -> 103900).
+        import os
+
+        driver_visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "<unset>")
+        try:
+            driver_device = torch.npu.current_device()
+        except Exception as e:
+            driver_device = f"<err: {e}>"
+        print(
+            "[DIAG] driver: ascend_visible_devices="
+            f"{driver_visible} current_device={driver_device}"
         )
 
         ref = source.make_tensor.remote()
