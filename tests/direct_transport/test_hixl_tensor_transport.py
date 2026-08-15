@@ -307,12 +307,7 @@ class _HixlSourceActor:
         return torch.arange(12, dtype=torch.float32, device="npu").reshape(3, 4)
 
     def get_cache_state(self):
-        """Introspect the actor-side HIXL cache for assertions.
-
-        Returns engine id, tensor_desc_cache size, remote engine cache size,
-        and init flag. The driver can't reach actor attributes, so this
-        surfaces the state the cache-reuse test needs.
-        """
+        """Introspect the actor-side HIXL cache for assertions."""
         import os
 
         import torch
@@ -340,15 +335,7 @@ class _HixlSourceActor:
 
 @ray.remote(resources={"NPU": 1})
 class _HixlSinkActor:
-    """Client side of the end-to-end transfer.
-
-    Runs in its own Ray worker process (Ray assigns it an NPU via
-    ASCEND_RT_VISIBLE_DEVICES, so it binds a *different* physical NPU than the
-    source actor). It receives the source actor's ObjectRef as an argument and
-    fetches the tensor via HIXL inside *this* process — the one-sided RDMA
-    READ therefore happens between two Ray-managed NPU processes, not in the
-    driver (which Ray does not assign an NPU to).
-    """
+    """Client side of the end-to-end transfer."""
 
     def __init__(self):
         register_hixl_tensor_transport(["npu", "cpu"])
