@@ -320,11 +320,7 @@ class _HixlSourceActor:
 
         mgr = get_tensor_transport_manager("HIXL")
         mgr._ensure_hixl_initialized()
-        # Diagnostic: what device did this process (actor) actually bind to?
-        # Read both the Ray-assigned visible-devices env var and torch_npu's
-        # notion of the current device, so we can compare against the driver's
-        # device and tell whether the two RDMA endpoints land on different
-        # physical NPUs.
+        resolved = mgr._resolve_npu_device_id()
         try:
             current_device = torch.npu.current_device()
         except Exception as e:
@@ -337,6 +333,7 @@ class _HixlSourceActor:
             "ascend_visible_devices": os.environ.get(
                 "ASCEND_RT_VISIBLE_DEVICES", "<unset>"
             ),
+            "resolved_device_id": resolved,
             "current_device": current_device,
         }
 
@@ -379,6 +376,7 @@ class _HixlSinkActor:
 
         mgr = get_tensor_transport_manager("HIXL")
         mgr._ensure_hixl_initialized()
+        resolved = mgr._resolve_npu_device_id()
         try:
             current_device = torch.npu.current_device()
         except Exception as e:
@@ -391,6 +389,7 @@ class _HixlSinkActor:
             "ascend_visible_devices": os.environ.get(
                 "ASCEND_RT_VISIBLE_DEVICES", "<unset>"
             ),
+            "resolved_device_id": resolved,
             "current_device": current_device,
         }
 
@@ -403,13 +402,7 @@ class TestEndToEndTransfer:
         pass
 
     def test_tensor_transport_via_rdt(self):
-        """HIXL-decorated remote method returns a tensor transported via HIXL.
-
-        Source actor produces an NPU tensor; the sink actor fetches it via HIXL
-        (one-sided RDMA READ) and returns it to the driver for verification.
-        Both actors run in Ray-managed NPU processes (each assigned a distinct
-        physical NPU), so the transfer is cross-process, not in the driver.
-        """
+        """HIXL-decorated remote method returns a tensor transported via HIXL."""
         source = _HixlSourceActor.remote()
         sink = _HixlSinkActor.remote()
 
@@ -418,12 +411,14 @@ class TestEndToEndTransfer:
         print(
             "\n[DIAG] source-actor: ascend_visible_devices="
             f"{src_state.get('ascend_visible_devices')} "
+            f"resolved={src_state.get('resolved_device_id')} "
             f"current_device={src_state.get('current_device')} "
             f"engine_id={src_state.get('driver_engine_id')}"
         )
         print(
             "[DIAG] sink-actor: ascend_visible_devices="
             f"{dst_state.get('ascend_visible_devices')} "
+            f"resolved={dst_state.get('resolved_device_id')} "
             f"current_device={dst_state.get('current_device')} "
             f"engine_id={dst_state.get('driver_engine_id')}"
         )
@@ -466,8 +461,5 @@ class TestEndToEndTransfer:
         assert src_state_after_first["tensor_desc_cache_size"] == 1
         assert src_state_after_second["tensor_desc_cache_size"] == 2
 
-        # The connection lives on the sink (client) side for a one-sided READ:
-        # it connects to the source engine, so its remote-engine cache reflects
-        # the reused connection.
         assert dst_state_after_first["remote_engines_size"] == 1
         assert dst_state_after_second["remote_engines_size"] == 1

@@ -4,7 +4,6 @@ import pickle
 import threading
 import time
 import traceback
-import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, cast
@@ -154,7 +153,7 @@ class HixlTensorTransport(TensorTransportManager):
         self._cache_lock = threading.RLock()
 
         # LRU cache of remote engine connections.
-        # Key:   str  — remote engine id ("host_ip:actor_id") that this engine
+        # Key:   str  — remote engine id ("host_ip:port") that this engine
         #              has connected to.
         # Value: int  — the remote engine's mem generation.
         # When full, the least recently used remote engine is evicted and
@@ -205,13 +204,7 @@ class HixlTensorTransport(TensorTransportManager):
 
     @staticmethod
     def _resolve_npu_device_id() -> int:
-        """Resolve the NPU device id this process should bind hixl to."""
-        visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "")
-        if visible and visible != "NoDevFiles":
-            try:
-                return int(visible.split(",")[0])
-            except ValueError:
-                pass
+        """Return the logical NPU index this process should bind hixl to."""
         return 0
 
     def _ensure_hixl_initialized(self) -> None:
@@ -230,11 +223,6 @@ class HixlTensorTransport(TensorTransportManager):
         with self._cache_lock:
             if self._hixl_initialized:
                 return
-
-            ctx = ray.get_runtime_context()
-            actor_id = ctx.get_actor_id()
-            if actor_id is None:
-                actor_id = f"RAY-DRIVER-{uuid.uuid4()}"
 
             node_ip = ray.util.get_node_ip_address()
             listen_port = self._allocate_listen_port()
