@@ -233,7 +233,8 @@ class HixlTensorTransport(TensorTransportManager):
 
             try:
                 self._hixl_engine = hixl.Hixl()
-                status = self._hixl_engine.initialize(self._local_engine_id, {})
+                options = {hixl.OPTION_AUTO_CONNECT: "1"}
+                status = self._hixl_engine.initialize(self._local_engine_id, options)
             except Exception as e:
                 raise RuntimeError(
                     f"Failed to initialize HIXL engine with id "
