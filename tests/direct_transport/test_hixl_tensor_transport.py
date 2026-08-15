@@ -341,6 +341,60 @@ class _HixlSourceActor:
         }
 
 
+@ray.remote(resources={"NPU": 1})
+class _HixlSinkActor:
+    """Client side of the end-to-end transfer.
+
+    Runs in its own Ray worker process (Ray assigns it an NPU via
+    ASCEND_RT_VISIBLE_DEVICES, so it binds a *different* physical NPU than the
+    source actor). It receives the source actor's ObjectRef as an argument and
+    fetches the tensor via HIXL inside *this* process — the one-sided RDMA
+    READ therefore happens between two Ray-managed NPU processes, not in the
+    driver (which Ray does not assign an NPU to).
+    """
+
+    def __init__(self):
+        register_hixl_tensor_transport(["npu", "cpu"])
+
+    def recv_and_verify(self, ref):
+        """Fetch the HIXL tensor referenced by `ref` via one-sided RDMA READ
+        (runs in *this* sink process), assert it landed on the NPU with the
+        right shape, then return the values as a CPU list for the driver to
+        check. Returning CPU scalars avoids re-serializing the NPU tensor
+        back through the object store (which would be a plain copy, not HIXL).
+        """
+        tensor = ray.get(ref)
+        assert (
+            tensor.device.type == "npu"
+        ), f"fetched tensor not on npu, got {tensor.device}"
+        assert tensor.shape == (3, 4), f"wrong shape {tuple(tensor.shape)}"
+        return tensor.cpu().reshape(-1).tolist()
+
+    def get_cache_state(self):
+        """Same introspection as _HixlSourceActor, for the client-side cache."""
+        import os
+
+        import torch
+        from ray.experimental.rdt.util import get_tensor_transport_manager
+
+        mgr = get_tensor_transport_manager("HIXL")
+        mgr._ensure_hixl_initialized()
+        try:
+            current_device = torch.npu.current_device()
+        except Exception as e:
+            current_device = f"<err: {e}>"
+        return {
+            "driver_engine_id": mgr._local_engine_id,
+            "tensor_desc_cache_size": len(mgr._tensor_desc_cache),
+            "remote_engines_size": len(mgr._remote_engines),
+            "hixl_initialized": mgr._hixl_initialized,
+            "ascend_visible_devices": os.environ.get(
+                "ASCEND_RT_VISIBLE_DEVICES", "<unset>"
+            ),
+            "current_device": current_device,
+        }
+
+
 class TestEndToEndTransfer:
     """Full RDMA READ between two NPU actors."""
 
@@ -350,68 +404,70 @@ class TestEndToEndTransfer:
 
     def test_tensor_transport_via_rdt(self):
         """HIXL-decorated remote method returns a tensor transported via HIXL.
-        Verifies content + shape + device."""
-        source = _HixlSourceActor.remote()
 
-        # Force source-actor engine init and capture its device context BEFORE
-        # the transfer, so we still get the diagnostic if the transfer fails.
-        state = ray.get(source.get_cache_state.remote())
+        Source actor produces an NPU tensor; the sink actor fetches it via HIXL
+        (one-sided RDMA READ) and returns it to the driver for verification.
+        Both actors run in Ray-managed NPU processes (each assigned a distinct
+        physical NPU), so the transfer is cross-process, not in the driver.
+        """
+        source = _HixlSourceActor.remote()
+        sink = _HixlSinkActor.remote()
+
+        src_state = ray.get(source.get_cache_state.remote())
+        dst_state = ray.get(sink.get_cache_state.remote())
         print(
             "\n[DIAG] source-actor: ascend_visible_devices="
-            f"{state.get('ascend_visible_devices')} "
-            f"current_device={state.get('current_device')} "
-            f"engine_id={state.get('driver_engine_id')}"
+            f"{src_state.get('ascend_visible_devices')} "
+            f"current_device={src_state.get('current_device')} "
+            f"engine_id={src_state.get('driver_engine_id')}"
         )
-
-        # Driver-side device context: compare against the source actor's to
-        # tell whether both ends bind hixl to the same physical NPU (which
-        # would make the cross-device RDMA endpoint mismatch -> 103900).
-        import os
-
-        driver_visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "<unset>")
-        try:
-            driver_device = torch.npu.current_device()
-        except Exception as e:
-            driver_device = f"<err: {e}>"
         print(
-            "[DIAG] driver: ascend_visible_devices="
-            f"{driver_visible} current_device={driver_device}"
+            "[DIAG] sink-actor: ascend_visible_devices="
+            f"{dst_state.get('ascend_visible_devices')} "
+            f"current_device={dst_state.get('current_device')} "
+            f"engine_id={dst_state.get('driver_engine_id')}"
         )
 
         ref = source.make_tensor.remote()
-        tensor = ray.get(ref)
+        got = ray.get(sink.recv_and_verify.remote(ref))
 
-        assert tensor.device.type == "npu"
-        assert tensor.shape == (3, 4)
-        expected = torch.arange(12, dtype=torch.float32).reshape(3, 4)
-        assert torch.equal(tensor.cpu(), expected)
+        expected = list(range(12))
+        assert got == expected, f"HIXL transferred values wrong: {got}"
 
     def test_two_source_tensors_transferred(self):
         """Two sequential HIXL transfers reuse actor-side state. Verifies across
         two make_tensor calls:
           - Engine stays initialized (no re-init per transfer).
-          - tensor_desc_cache grows by one per transfer (distinct storages —
-            expected RDT contract, not a leak).
-          - remote engine cache stays at 1 (sole receiver -> reused connection).
+          - source tensor_desc_cache grows by one per transfer (distinct
+            storages — expected RDT contract, not a leak).
+          - sink remote engine cache stays at 1 (sole source -> reused
+            connection).
         """
         source = _HixlSourceActor.remote()
+        sink = _HixlSinkActor.remote()
+
         ref1 = source.make_tensor.remote()
-        t1 = ray.get(ref1)
-        state_after_first = ray.get(source.get_cache_state.remote())
+        got1 = ray.get(sink.recv_and_verify.remote(ref1))
+        src_state_after_first = ray.get(source.get_cache_state.remote())
+        dst_state_after_first = ray.get(sink.get_cache_state.remote())
 
         ref2 = source.make_tensor.remote()
-        t2 = ray.get(ref2)
-        state_after_second = ray.get(source.get_cache_state.remote())
+        got2 = ray.get(sink.recv_and_verify.remote(ref2))
+        src_state_after_second = ray.get(source.get_cache_state.remote())
+        dst_state_after_second = ray.get(sink.get_cache_state.remote())
 
-        expected = torch.arange(12, dtype=torch.float32).reshape(3, 4)
-        assert torch.equal(t1.cpu(), expected)
-        assert torch.equal(t2.cpu(), expected)
+        expected = list(range(12))
+        assert got1 == expected, f"first transfer wrong: {got1}"
+        assert got2 == expected, f"second transfer wrong: {got2}"
 
-        assert state_after_first["hixl_initialized"] is True
-        assert state_after_second["hixl_initialized"] is True
+        assert src_state_after_first["hixl_initialized"] is True
+        assert src_state_after_second["hixl_initialized"] is True
 
-        assert state_after_first["tensor_desc_cache_size"] == 1
-        assert state_after_second["tensor_desc_cache_size"] == 2
+        assert src_state_after_first["tensor_desc_cache_size"] == 1
+        assert src_state_after_second["tensor_desc_cache_size"] == 2
 
-        assert state_after_first["remote_engines_size"] == 1
-        assert state_after_second["remote_engines_size"] == 1
+        # The connection lives on the sink (client) side for a one-sided READ:
+        # it connects to the source engine, so its remote-engine cache reflects
+        # the reused connection.
+        assert dst_state_after_first["remote_engines_size"] == 1
+        assert dst_state_after_second["remote_engines_size"] == 1
